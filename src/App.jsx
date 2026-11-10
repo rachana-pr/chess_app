@@ -1,146 +1,66 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Chess } from 'chess.js';
+import { PieceDefs, ChessPiece } from './ChessPieces';
 import './App.css';
 
-// Unicode symbols for chess pieces
-const PIECE_SYMBOLS = {
-  white: { king: '♔', queen: '♕', rook: '♖', bishop: '♗', knight: '♘', pawn: '♙' },
-  black: { king: '♚', queen: '♛', rook: '♜', bishop: '♝', knight: '♞', pawn: '♟' },
+// Material values for advantage and AI evaluation
+const PIECE_VALUES = {
+  p: 1,
+  n: 3,
+  b: 3,
+  r: 5,
+  q: 9,
+  k: 0,
 };
 
-// Initial starting arrangement of a chess board (8 rows x 8 cols)
-const createInitialBoard = () => {
-  const board = Array(8).fill(null).map(() => Array(8).fill(null));
-  const major = ['rook', 'knight', 'bishop', 'queen', 'king', 'bishop', 'knight', 'rook'];
-
-  for (let c = 0; c < 8; c++) {
-    board[0][c] = { type: major[c], color: 'black' };
-    board[1][c] = { type: 'pawn', color: 'black' };
-    board[6][c] = { type: 'pawn', color: 'white' };
-    board[7][c] = { type: major[c], color: 'white' };
-  }
-  return board;
-};
-
-// Web Audio API synthesizer for instant sound effects (zero external files)
-const playAudioEffect = (type) => {
+// Web Audio API Synthesizer (Reliable audio without external asset loading)
+const playAudio = (type, enabled = true) => {
+  if (!enabled) return;
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
     gain.connect(ctx.destination);
-
     const now = ctx.currentTime;
+
     if (type === 'capture') {
       osc.type = 'triangle';
-      osc.frequency.setValueAtTime(320, now);
-      osc.frequency.exponentialRampToValueAtTime(100, now + 0.15);
-      gain.gain.setValueAtTime(0.35, now);
-      gain.gain.linearRampToValueAtTime(0.01, now + 0.15);
+      osc.frequency.setValueAtTime(280, now);
+      osc.frequency.exponentialRampToValueAtTime(75, now + 0.14);
+      gain.gain.setValueAtTime(0.4, now);
+      gain.gain.linearRampToValueAtTime(0.01, now + 0.14);
       osc.start(now);
-      osc.stop(now + 0.15);
-    } else {
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(460, now);
-      osc.frequency.exponentialRampToValueAtTime(260, now + 0.08);
+      osc.stop(now + 0.14);
+    } else if (type === 'check') {
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(440, now);
+      osc.frequency.setValueAtTime(554.37, now + 0.08);
       gain.gain.setValueAtTime(0.25, now);
+      gain.gain.linearRampToValueAtTime(0.01, now + 0.22);
+      osc.start(now);
+      osc.stop(now + 0.22);
+    } else if (type === 'hint') {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, now);
+      osc.frequency.setValueAtTime(880, now + 0.08);
+      gain.gain.setValueAtTime(0.2, now);
+      gain.gain.linearRampToValueAtTime(0.01, now + 0.22);
+      osc.start(now);
+      osc.stop(now + 0.22);
+    } else {
+      // Move sound
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(380, now);
+      osc.frequency.exponentialRampToValueAtTime(140, now + 0.08);
+      gain.gain.setValueAtTime(0.3, now);
       gain.gain.linearRampToValueAtTime(0.01, now + 0.08);
       osc.start(now);
       osc.stop(now + 0.08);
     }
   } catch {
-    // Silently ignore if browser blocked auto-play before user gesture
+    // Ignore autoplay restriction
   }
-};
-
-// Helper: Calculate basic candidate moves for a piece
-const getPossibleMoves = (board, row, col) => {
-  const piece = board[row][col];
-  if (!piece) return [];
-
-  const moves = [];
-  const isInside = (r, c) => r >= 0 && r < 8 && c >= 0 && c < 8;
-
-  const addMoveIfValid = (r, c) => {
-    if (!isInside(r, c)) return false;
-    const target = board[r][c];
-    if (!target) {
-      moves.push({ row: r, col: c, capture: false });
-      return true; // continue line
-    }
-    if (target.color !== piece.color) {
-      moves.push({ row: r, col: c, capture: true, targetPiece: target.type });
-    }
-    return false; // blocked
-  };
-
-  const addRay = (dRow, dCol) => {
-    let r = row + dRow;
-    let c = col + dCol;
-    while (isInside(r, c)) {
-      const keepGoing = addMoveIfValid(r, c);
-      if (!keepGoing) break;
-      r += dRow;
-      c += dCol;
-    }
-  };
-
-  // 1. PAWN
-  if (piece.type === 'pawn') {
-    const dir = piece.color === 'white' ? -1 : 1;
-    const startRow = piece.color === 'white' ? 6 : 1;
-
-    // 1 step forward
-    if (isInside(row + dir, col) && !board[row + dir][col]) {
-      moves.push({ row: row + dir, col, capture: false });
-      // 2 steps forward from initial rank
-      if (row === startRow && !board[row + 2 * dir][col]) {
-        moves.push({ row: row + 2 * dir, col, capture: false });
-      }
-    }
-    // Diagonal captures
-    [-1, 1].forEach((dc) => {
-      const r = row + dir;
-      const c = col + dc;
-      if (isInside(r, c) && board[r][c] && board[r][c].color !== piece.color) {
-        moves.push({ row: r, col: c, capture: true, targetPiece: board[r][c].type });
-      }
-    });
-  }
-
-  // 2. KNIGHT
-  if (piece.type === 'knight') {
-    [[-2, -1], [-2, 1], [-1, -2], [-1, 2], [1, -2], [1, 2], [2, -1], [2, 1]].forEach(
-      ([dr, dc]) => addMoveIfValid(row + dr, col + dc)
-    );
-  }
-
-  // 3. BISHOP / QUEEN (diagonals)
-  if (piece.type === 'bishop' || piece.type === 'queen') {
-    addRay(-1, -1);
-    addRay(-1, 1);
-    addRay(1, -1);
-    addRay(1, 1);
-  }
-
-  // 4. ROOK / QUEEN (straights)
-  if (piece.type === 'rook' || piece.type === 'queen') {
-    addRay(-1, 0);
-    addRay(1, 0);
-    addRay(0, -1);
-    addRay(0, 1);
-  }
-
-  // 5. KING
-  if (piece.type === 'king') {
-    for (let dr = -1; dr <= 1; dr++) {
-      for (let dc = -1; dc <= 1; dc++) {
-        if (dr !== 0 || dc !== 0) addMoveIfValid(row + dr, col + dc);
-      }
-    }
-  }
-
-  return moves;
 };
 
 // Formats seconds into MM:SS
@@ -150,141 +70,237 @@ const formatTimer = (seconds) => {
   return `${m}:${s < 10 ? '0' : ''}${s}`;
 };
 
-// Converts move coordinates into chess notation (e.g. e4, Nf3, exd5)
-const toAlgebraic = (piece, from, to, isCapture) => {
-  const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
-  const toSquare = `${files[to.col]}${8 - to.row}`;
-
-  if (piece.type === 'pawn') {
-    return isCapture ? `${files[from.col]}x${toSquare}` : toSquare;
+// Evaluates a move for AI & Hints
+const scoreMove = (move) => {
+  let score = 0;
+  if (move.captured) {
+    score += (PIECE_VALUES[move.captured] || 1) * 10;
   }
-  const prefixMap = { knight: 'N', bishop: 'B', rook: 'R', queen: 'Q', king: 'K' };
-  const prefix = prefixMap[piece.type] || '';
-  return `${prefix}${isCapture ? 'x' : ''}${toSquare}`;
+  // Center control bonus
+  if (['d4', 'd5', 'e4', 'e5'].includes(move.to)) {
+    score += 5;
+  } else if (['c3', 'c4', 'c5', 'c6', 'f3', 'f4', 'f5', 'f6'].includes(move.to)) {
+    score += 2;
+  }
+  if (move.san.includes('+')) score += 3;
+  return score;
 };
 
-// Component: Piece
-function Piece({ piece }) {
-  if (!piece) return null;
-  return (
-    <span className={`piece ${piece.color}`}>
-      {PIECE_SYMBOLS[piece.color][piece.type]}
-    </span>
-  );
-}
-
-// Component: Square
-function Square({ row, col, piece, isSelected, isLastMove, isPossibleMove, isCapture, onClick }) {
-  const isLight = (row + col) % 2 === 0;
-  const fileLetter = col === 7 ? 8 - row : null;
-  const rankNumber = row === 7 ? String.fromCharCode(97 + col) : null;
-
+// Component: A single square on the board
+function Square({
+  squareName,
+  piece,
+  isLight,
+  isSelected,
+  isLastMove,
+  isInCheck,
+  isHintFrom,
+  isHintTo,
+  isPossibleMove,
+  isCapture,
+  rankLabel,
+  fileLabel,
+  onClick,
+  onDragStart,
+  onDrop
+}) {
   let className = `square ${isLight ? 'light' : 'dark'}`;
   if (isSelected) className += ' selected';
   if (isLastMove) className += ' last-move';
+  if (isInCheck) className += ' in-check';
+  if (isHintFrom) className += ' hint-from';
+  if (isHintTo) className += ' hint-to';
   if (isPossibleMove) className += isCapture ? ' possible-capture' : ' possible-move';
 
   return (
-    <div className={className} onClick={onClick}>
-      <Piece piece={piece} />
-      {fileLetter && <span className="coord-rank">{fileLetter}</span>}
-      {rankNumber && <span className="coord-file">{rankNumber}</span>}
+    <div
+      className={className}
+      onClick={onClick}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => onDrop(e, squareName)}
+    >
+      {piece && (
+        <div
+          className="piece-wrapper"
+          draggable={Boolean(piece)}
+          onDragStart={(e) => onDragStart(e, squareName)}
+        >
+          <ChessPiece type={piece.type} color={piece.color} />
+        </div>
+      )}
+      {rankLabel && <span className="coord-rank">{rankLabel}</span>}
+      {fileLabel && <span className="coord-file">{fileLabel}</span>}
     </div>
   );
 }
 
 export default function App() {
-  // Game States
-  const [board, setBoard] = useState(createInitialBoard);
-  const [turn, setTurn] = useState('white');
+  // Official standard chess engine state
+  const [game] = useState(() => new Chess());
+  const [fen, setFen] = useState(game.fen());
+
+  // Interaction State
   const [selectedSquare, setSelectedSquare] = useState(null);
   const [lastMove, setLastMove] = useState(null);
-  const [captured, setCaptured] = useState({ white: [], black: [] });
-  const [moveHistory, setMoveHistory] = useState([]);
-  const [gameMode, setGameMode] = useState('bot'); // 'bot' or 'pvp'
-  const [whiteTime, setWhiteTime] = useState(300); // 5 minutes
-  const [blackTime, setBlackTime] = useState(300);
-  const [gameOver, setGameOver] = useState(null);
+  const [hint, setHint] = useState(null);
 
-  // Compute possible moves for selected square
-  const possibleMoves = selectedSquare && !gameOver
-    ? getPossibleMoves(board, selectedSquare.row, selectedSquare.col)
+  // Settings & Controls
+  const [gameMode, setGameMode] = useState('bot'); // 'bot' or 'pvp'
+  const [difficulty, setDifficulty] = useState('medium'); // 'easy', 'medium', 'hard'
+  const [isFlipped, setIsFlipped] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+
+  // Clocks & Timer
+  const [whiteTime, setWhiteTime] = useState(300);
+  const [blackTime, setBlackTime] = useState(300);
+  const [timeoutWinner, setTimeoutWinner] = useState(null);
+
+  const turn = game.turn(); // 'w' or 'b'
+  const isGameOver = game.isGameOver() || Boolean(timeoutWinner);
+  const isCheck = game.isCheck();
+
+  // Find King square if currently in check
+  let checkKingSquare = null;
+  if (isCheck) {
+    const b = game.board();
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        const p = b[r][c];
+        if (p && p.type === 'k' && p.color === turn) {
+          checkKingSquare = p.square;
+        }
+      }
+    }
+  }
+
+  // Get legal moves for currently selected square
+  const legalMoves = selectedSquare && !isGameOver
+    ? game.moves({ square: selectedSquare, verbose: true })
     : [];
 
-  // Function to execute a move (memoized with useCallback)
-  const makeMove = useCallback((from, to) => {
-    const newBoard = board.map((row) => [...row]);
-    const movingPiece = newBoard[from.row][from.col];
-    const targetPiece = newBoard[to.row][to.col];
-    const isCapture = Boolean(targetPiece);
+  // Captured pieces and advantage
+  const history = game.history({ verbose: true });
+  const whiteCaptured = history.filter((m) => m.color === 'w' && m.captured).map((m) => m.captured);
+  const blackCaptured = history.filter((m) => m.color === 'b' && m.captured).map((m) => m.captured);
 
-    // Audio effect
-    playAudioEffect(isCapture ? 'capture' : 'move');
+  const whiteScore = whiteCaptured.reduce((sum, p) => sum + (PIECE_VALUES[p] || 0), 0);
+  const blackScore = blackCaptured.reduce((sum, p) => sum + (PIECE_VALUES[p] || 0), 0);
+  const advantage = whiteScore - blackScore;
 
-    // Handle captures
-    if (targetPiece) {
-      if (targetPiece.type === 'king') {
-        setGameOver(`${movingPiece.color === 'white' ? 'White' : 'Black'} wins by capturing King!`);
+  // Make move execution handler
+  const handleMove = useCallback((from, to) => {
+    try {
+      const move = game.move({ from, to, promotion: 'q' });
+      if (!move) return false;
+
+      // Audio feedback
+      if (game.isCheckmate() || game.isCheck()) {
+        playAudio('check', soundEnabled);
+      } else if (move.captured) {
+        playAudio('capture', soundEnabled);
+      } else {
+        playAudio('move', soundEnabled);
       }
-      setCaptured((prev) => ({
-        ...prev,
-        [targetPiece.color]: [...prev[targetPiece.color], targetPiece],
-      }));
+
+      setLastMove({ from, to });
+      setSelectedSquare(null);
+      setHint(null);
+      setFen(game.fen());
+      return true;
+    } catch {
+      return false;
     }
+  }, [game, soundEnabled]);
 
-    // Pawn promotion (auto-promote to Queen for simplicity)
-    if (movingPiece.type === 'pawn' && (to.row === 0 || to.row === 7)) {
-      movingPiece.type = 'queen';
-    }
+  // Click on a square
+  const handleSquareClick = (square) => {
+    if (isGameOver) return;
+    if (gameMode === 'bot' && turn === 'b') return;
 
-    // Apply movement
-    newBoard[to.row][to.col] = movingPiece;
-    newBoard[from.row][from.col] = null;
+    const pieceOnSquare = game.get(square);
 
-    // Record notation in move history
-    const notation = toAlgebraic(movingPiece, from, to, isCapture);
-    setMoveHistory((prev) => [...prev, { piece: movingPiece, notation, color: movingPiece.color }]);
-
-    // Update state
-    setBoard(newBoard);
-    setSelectedSquare(null);
-    setLastMove({ from, to });
-    setTurn((prevTurn) => (prevTurn === 'white' ? 'black' : 'white'));
-  }, [board]);
-
-  // User click on square
-  const handleSquareClick = (r, c) => {
-    if (gameOver) return;
-    if (gameMode === 'bot' && turn === 'black') return; // wait for computer
-
-    const clickedPiece = board[r][c];
-
-    // Select piece of current turn
-    if (clickedPiece && clickedPiece.color === turn) {
-      setSelectedSquare({ row: r, col: c });
+    // 1. If clicking own piece -> select it
+    if (pieceOnSquare && pieceOnSquare.color === turn) {
+      setSelectedSquare(square);
+      setHint(null);
       return;
     }
 
-    // Move to destination
+    // 2. If a piece is already selected, try to move to the clicked square
     if (selectedSquare) {
-      const validMove = possibleMoves.find((m) => m.row === r && m.col === c);
-      if (validMove) {
-        makeMove(selectedSquare, { row: r, col: c });
-      } else {
+      const success = handleMove(selectedSquare, square);
+      if (!success) {
         setSelectedSquare(null);
       }
     }
   };
 
-  // REACT HOOK 1: Clock Timer with useEffect
-  useEffect(() => {
-    if (gameOver || moveHistory.length === 0) return;
+  // Drag and Drop
+  const handleDragStart = (e, square) => {
+    if (isGameOver) return;
+    if (gameMode === 'bot' && turn === 'b') return;
+    const p = game.get(square);
+    if (p && p.color === turn) {
+      setSelectedSquare(square);
+      e.dataTransfer.setData('text/plain', square);
+    }
+  };
 
-    const interval = setInterval(() => {
-      if (turn === 'white') {
+  const handleDrop = (e, targetSquare) => {
+    e.preventDefault();
+    const sourceSquare = e.dataTransfer.getData('text/plain');
+    if (sourceSquare && sourceSquare !== targetSquare) {
+      handleMove(sourceSquare, targetSquare);
+    }
+  };
+
+  // User-Friendly: Undo
+  const handleUndo = () => {
+    if (game.history().length === 0 || isGameOver) return;
+    if (gameMode === 'bot') {
+      game.undo(); // Undo bot
+      game.undo(); // Undo player
+    } else {
+      game.undo();
+    }
+    setSelectedSquare(null);
+    setHint(null);
+    setLastMove(null);
+    setFen(game.fen());
+    playAudio('move', soundEnabled);
+  };
+
+  // User-Friendly: Hint
+  const handleHint = () => {
+    if (isGameOver || turn !== 'w') return;
+    const moves = game.moves({ verbose: true });
+    if (moves.length === 0) return;
+    moves.sort((a, b) => scoreMove(b) - scoreMove(a));
+    setHint({ from: moves[0].from, to: moves[0].to });
+    playAudio('hint', soundEnabled);
+  };
+
+  // Reset
+  const handleReset = () => {
+    game.reset();
+    setSelectedSquare(null);
+    setLastMove(null);
+    setHint(null);
+    setWhiteTime(300);
+    setBlackTime(300);
+    setTimeoutWinner(null);
+    setFen(game.fen());
+  };
+
+  // Turn Clocks
+  useEffect(() => {
+    if (isGameOver || history.length === 0) return;
+
+    const timer = setInterval(() => {
+      if (turn === 'w') {
         setWhiteTime((t) => {
           if (t <= 1) {
-            setGameOver('Black wins on time!');
+            setTimeoutWinner('Black wins on time! ⌛');
             return 0;
           }
           return t - 1;
@@ -292,7 +308,7 @@ export default function App() {
       } else {
         setBlackTime((t) => {
           if (t <= 1) {
-            setGameOver('White wins on time!');
+            setTimeoutWinner('White wins on time! ⌛');
             return 0;
           }
           return t - 1;
@@ -300,174 +316,301 @@ export default function App() {
       }
     }, 1000);
 
-    // Cleanup function: clears timer when turn changes or component unmounts
-    return () => clearInterval(interval);
-  }, [turn, gameOver, moveHistory.length]);
+    return () => clearInterval(timer);
+  }, [turn, isGameOver, history.length]);
 
-  // REACT HOOK 2: Computer Bot AI with useEffect
+  // AI Bot Response
   useEffect(() => {
-    if (gameMode !== 'bot' || turn !== 'black' || gameOver) return;
+    if (gameMode !== 'bot' || turn !== 'b' || isGameOver) return;
 
-    // Small delay so bot feels realistic
     const botTimeout = setTimeout(() => {
-      const blackMoves = [];
+      const moves = game.moves({ verbose: true });
+      if (moves.length === 0) return;
 
-      // Find all possible legal moves for all black pieces
-      for (let r = 0; r < 8; r++) {
-        for (let c = 0; c < 8; c++) {
-          if (board[r][c] && board[r][c].color === 'black') {
-            const moves = getPossibleMoves(board, r, c);
-            moves.forEach((m) => {
-              blackMoves.push({ from: { row: r, col: c }, to: { row: m.row, col: m.col }, moveInfo: m });
-            });
-          }
-        }
+      let chosen;
+      if (difficulty === 'easy') {
+        chosen = moves[Math.floor(Math.random() * moves.length)];
+      } else if (difficulty === 'medium') {
+        const captures = moves.filter((m) => m.captured || m.san.includes('+'));
+        chosen = captures.length > 0
+          ? captures[Math.floor(Math.random() * captures.length)]
+          : moves[Math.floor(Math.random() * moves.length)];
+      } else {
+        // Hard: pick best scored move
+        moves.sort((a, b) => scoreMove(b) - scoreMove(a));
+        chosen = moves[0];
       }
 
-      if (blackMoves.length === 0) {
-        setGameOver('Game over: White wins!');
-        return;
-      }
-
-      // Prioritize captures first (smart bot)
-      const captures = blackMoves.filter((m) => m.moveInfo.capture);
-      const chosenMove = captures.length > 0
-        ? captures[Math.floor(Math.random() * captures.length)]
-        : blackMoves[Math.floor(Math.random() * blackMoves.length)];
-
-      makeMove(chosenMove.from, chosenMove.to);
-    }, 500);
+      handleMove(chosen.from, chosen.to);
+    }, 450);
 
     return () => clearTimeout(botTimeout);
-  }, [turn, gameMode, gameOver, board, makeMove]);
+  }, [fen, gameMode, difficulty, turn, isGameOver, game, handleMove]);
 
-  const handleReset = () => {
-    setBoard(createInitialBoard());
-    setTurn('white');
-    setSelectedSquare(null);
-    setLastMove(null);
-    setCaptured({ white: [], black: [] });
-    setMoveHistory([]);
-    setWhiteTime(300);
-    setBlackTime(300);
-    setGameOver(null);
-  };
+  // Board Coordinates (supports flip)
+  const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+  const ranks = ['8', '7', '6', '5', '4', '3', '2', '1'];
+
+  const displayedRanks = isFlipped ? [...ranks].reverse() : ranks;
+  const displayedFiles = isFlipped ? [...files].reverse() : files;
+
+  // Game Over Status Text
+  let gameOverText = null;
+  if (timeoutWinner) {
+    gameOverText = timeoutWinner;
+  } else if (game.isCheckmate()) {
+    gameOverText = `Checkmate! ${turn === 'w' ? 'Black' : 'White'} wins! 🏆`;
+  } else if (game.isDraw()) {
+    gameOverText = 'Game drawn! 🤝';
+  }
 
   return (
     <div className="app">
+      {/* SVG Definitions */}
+      <PieceDefs />
+
+      {/* Header */}
       <header>
-        <h1>React Chess</h1>
-        <p className="subtitle">Learn React with interactive state, hooks, audio, and an AI opponent</p>
+        <div className="brand">
+          <span className="brand-icon">♞</span>
+          <h1>Grandmaster Chess</h1>
+        </div>
+
+        <div className="header-actions">
+          <button
+            className="btn-header"
+            onClick={() => setSoundEnabled(!soundEnabled)}
+            title="Toggle sound"
+          >
+            {soundEnabled ? '🔊 Sound On' : '🔇 Muted'}
+          </button>
+        </div>
       </header>
 
-      <div className="game-layout">
+      {/* Main Arena */}
+      <div className="game-arena">
+        {/* Board & Player Column */}
         <div className="board-column">
-          {/* Black Player Bar */}
+          {/* Top Player (Black) */}
           <div className="player-bar">
             <div className="player-info">
-              <span className="player-name">
-                {gameMode === 'bot' ? '🤖 Computer (Black)' : 'Black Player'}
-              </span>
-              <div className="captured-inline">
-                {captured.white.map((p, i) => (
-                  <Piece key={i} piece={p} />
-                ))}
+              <span className="player-avatar">{gameMode === 'bot' ? '🤖' : '👤'}</span>
+              <div>
+                <span className="player-name">
+                  {gameMode === 'bot' ? `Bot (${difficulty})` : 'Black'}
+                  {advantage < 0 && <span className="advantage-badge">+{Math.abs(advantage)}</span>}
+                </span>
+                <div className="captured-strip">
+                  {whiteCaptured.map((p, i) => (
+                    <span key={i} className="captured-mini">
+                      <ChessPiece type={p} color="white" />
+                    </span>
+                  ))}
+                </div>
               </div>
             </div>
-            <div className={`player-timer ${turn === 'black' && !gameOver ? 'active' : ''} ${blackTime < 30 ? 'low-time' : ''}`}>
+            <div className={`clock ${turn === 'b' && !isGameOver ? 'active' : ''} ${blackTime < 30 ? 'panic' : ''}`}>
               {formatTimer(blackTime)}
             </div>
           </div>
 
-          {/* Chessboard */}
-          <div className="board">
-            {board.map((rowArr, r) =>
-              rowArr.map((piece, c) => {
-                const isSelected = selectedSquare && selectedSquare.row === r && selectedSquare.col === c;
-                const isLastMove = lastMove && ((lastMove.from.row === r && lastMove.from.col === c) || (lastMove.to.row === r && lastMove.to.col === c));
-                const moveInfo = possibleMoves.find((m) => m.row === r && m.col === c);
+          {/* Wooden Master Board */}
+          <div className="board-container">
+            <div className="board-inner-frame">
+              <div className="board-grid">
+                {displayedRanks.map((rank, rIdx) =>
+                  displayedFiles.map((file, cIdx) => {
+                    const squareName = `${file}${rank}`;
+                    const piece = game.get(squareName);
+                    const isLight = (rIdx + cIdx) % 2 === 0;
 
-                return (
-                  <Square
-                    key={`${r}-${c}`}
-                    row={r}
-                    col={c}
-                    piece={piece}
-                    isSelected={isSelected}
-                    isLastMove={isLastMove}
-                    isPossibleMove={Boolean(moveInfo)}
-                    isCapture={moveInfo?.capture}
-                    onClick={() => handleSquareClick(r, c)}
-                  />
-                );
-              })
-            )}
-          </div>
+                    const isSelected = selectedSquare === squareName;
+                    const isLast = lastMove && (lastMove.from === squareName || lastMove.to === squareName);
+                    const isInCheckSquare = checkKingSquare === squareName;
+                    const isHintFrom = hint && hint.from === squareName;
+                    const isHintTo = hint && hint.to === squareName;
 
-          {/* White Player Bar */}
-          <div className="player-bar">
-            <div className="player-info">
-              <span className="player-name">You (White)</span>
-              <div className="captured-inline">
-                {captured.black.map((p, i) => (
-                  <Piece key={i} piece={p} />
-                ))}
+                    const moveInfo = legalMoves.find((m) => m.to === squareName);
+                    const isPossibleMove = Boolean(moveInfo);
+                    const isCapture = Boolean(moveInfo?.captured);
+
+                    const rankLabel = cIdx === 0 ? rank : null;
+                    const fileLabel = rIdx === 7 ? file : null;
+
+                    return (
+                      <Square
+                        key={squareName}
+                        squareName={squareName}
+                        piece={piece}
+                        isLight={isLight}
+                        isSelected={isSelected}
+                        isLastMove={isLast}
+                        isInCheck={isInCheckSquare}
+                        isHintFrom={isHintFrom}
+                        isHintTo={isHintTo}
+                        isPossibleMove={isPossibleMove}
+                        isCapture={isCapture}
+                        rankLabel={rankLabel}
+                        fileLabel={fileLabel}
+                        onClick={() => handleSquareClick(squareName)}
+                        onDragStart={handleDragStart}
+                        onDrop={handleDrop}
+                      />
+                    );
+                  })
+                )}
               </div>
             </div>
-            <div className={`player-timer ${turn === 'white' && !gameOver ? 'active' : ''} ${whiteTime < 30 ? 'low-time' : ''}`}>
+          </div>
+
+          {/* Bottom Player (White) */}
+          <div className="player-bar">
+            <div className="player-info">
+              <span className="player-avatar">👑</span>
+              <div>
+                <span className="player-name">
+                  You (White)
+                  {advantage > 0 && <span className="advantage-badge">+{advantage}</span>}
+                </span>
+                <div className="captured-strip">
+                  {blackCaptured.map((p, i) => (
+                    <span key={i} className="captured-mini">
+                      <ChessPiece type={p} color="black" />
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className={`clock ${turn === 'w' && !isGameOver ? 'active' : ''} ${whiteTime < 30 ? 'panic' : ''}`}>
               {formatTimer(whiteTime)}
             </div>
           </div>
         </div>
 
-        {/* Sidebar Controls */}
+        {/* Sidebar Controls & History */}
         <aside className="sidebar">
-          {gameOver && <div className="status-message">{gameOver}</div>}
+          {isCheck && !isGameOver && (
+            <div className="status-banner">
+              ⚠️ King in Check!
+            </div>
+          )}
 
-          <div className="card">
-            <div className="card-title">Game Mode</div>
-            <div className="mode-toggle">
+          {/* Quick Actions */}
+          <div className="panel">
+            <div className="panel-title">Controls</div>
+            <div className="action-grid">
               <button
-                className={`mode-btn ${gameMode === 'bot' ? 'active' : ''}`}
-                onClick={() => setGameMode('bot')}
+                className="btn-action"
+                onClick={handleUndo}
+                disabled={game.history().length === 0 || isGameOver}
+                title="Take back last move"
               >
-                vs Computer
+                ↩ Undo
               </button>
               <button
-                className={`mode-btn ${gameMode === 'pvp' ? 'active' : ''}`}
-                onClick={() => setGameMode('pvp')}
+                className="btn-action highlight"
+                onClick={handleHint}
+                disabled={turn !== 'w' || isGameOver}
+                title="Suggest best move"
               >
-                Pass & Play
+                💡 Hint
+              </button>
+              <button
+                className="btn-action"
+                onClick={() => setIsFlipped(!isFlipped)}
+                title="Flip board orientation"
+              >
+                🔄 Flip
+              </button>
+              <button
+                className="btn-action"
+                onClick={handleReset}
+                title="Restart game"
+              >
+                ⚡ Reset
               </button>
             </div>
           </div>
 
-          <div className="card">
-            <div className="card-title">Move History</div>
-            <div className="moves-list">
-              {moveHistory.length === 0 && <span style={{ color: '#6b7280' }}>No moves yet</span>}
-              {moveHistory.reduce((acc, move, idx) => {
-                if (idx % 2 === 0) {
-                  acc.push([move]);
-                } else {
-                  acc[acc.length - 1].push(move);
-                }
+          {/* Game Mode & Difficulty */}
+          <div className="panel">
+            <div className="panel-title">Game Mode</div>
+            <div className="action-grid">
+              <button
+                className={`btn-action ${gameMode === 'bot' ? 'active' : ''}`}
+                onClick={() => setGameMode('bot')}
+              >
+                🤖 vs Bot
+              </button>
+              <button
+                className={`btn-action ${gameMode === 'pvp' ? 'active' : ''}`}
+                onClick={() => setGameMode('pvp')}
+              >
+                👥 2-Player
+              </button>
+            </div>
+
+            {gameMode === 'bot' && (
+              <>
+                <div className="panel-title" style={{ marginTop: '12px' }}>Bot Difficulty</div>
+                <div className="difficulty-selector">
+                  {['easy', 'medium', 'hard'].map((d) => (
+                    <button
+                      key={d}
+                      className={`difficulty-btn ${difficulty === d ? 'active' : ''}`}
+                      onClick={() => setDifficulty(d)}
+                    >
+                      {d.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Move Log */}
+          <div className="panel">
+            <div className="panel-title">
+              <span>Move Log</span>
+              <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                {history.length} moves
+              </span>
+            </div>
+            <div className="moves-table">
+              {history.length === 0 && (
+                <span style={{ color: '#6b7280', textAlign: 'center', padding: '12px 0' }}>
+                  Awaiting first move...
+                </span>
+              )}
+              {history.reduce((acc, move, idx) => {
+                if (idx % 2 === 0) acc.push([move]);
+                else acc[acc.length - 1].push(move);
                 return acc;
-              }, []).map((pair, turnNum) => (
-                <div key={turnNum} className="move-row">
-                  <span className="move-num">{turnNum + 1}.</span>
-                  <span className="move-white">{pair[0]?.notation}</span>
-                  <span className="move-black">{pair[1]?.notation || ''}</span>
+              }, []).map((pair, idx) => (
+                <div key={idx} className="move-entry">
+                  <span className="move-index">{idx + 1}.</span>
+                  <span className="move-san">{pair[0]?.san}</span>
+                  <span className="move-san">{pair[1]?.san || ''}</span>
                 </div>
               ))}
             </div>
           </div>
-
-          <button className="btn-reset" onClick={handleReset}>
-            New Game
-          </button>
         </aside>
       </div>
+
+      {/* Game Over Modal */}
+      {isGameOver && (
+        <div className="modal-overlay">
+          <div className="modal-card">
+            <div className="modal-icon">🏆</div>
+            <h2 className="modal-title">Game Over</h2>
+            <p className="modal-desc">{gameOverText}</p>
+            <button className="btn-primary" onClick={handleReset}>
+              Play Again
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
